@@ -40,6 +40,8 @@ def run_cycle() -> None:
             "--train-ml",
         ]
     )
+    # Send daily email report to all registered users
+    _run([sys.executable, "scripts/send_daily_report.py"])
 
 
 def notify_failure(message: str) -> None:

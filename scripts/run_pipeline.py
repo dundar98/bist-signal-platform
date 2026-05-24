@@ -69,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--use-market-regime", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--send-email", action="store_true", help="Send daily report email after pipeline completes.")
     return parser.parse_args()
 
 
@@ -266,6 +267,17 @@ def main() -> int:
         for error in summary.errors[:20]:
             print(f"ERROR {error}")
         return 1
+
+    # Optionally send email report
+    if args.send_email:
+        import subprocess
+        print("Sending daily report email...")
+        subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "send_daily_report.py")],
+            cwd=str(PROJECT_ROOT),
+            check=False,
+        )
+
     return 0
 
 

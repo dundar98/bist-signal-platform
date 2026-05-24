@@ -401,13 +401,20 @@ function SymbolInsightPage({ token }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const matches = useMemo(() => {
-    const query = ticker.trim().toUpperCase();
-    const filtered = symbols.filter((symbol) => {
-      const name = (symbol.name || "").toUpperCase();
-      return !query || symbol.ticker.includes(query) || name.includes(query);
-    });
-    return filtered.slice(0, 10);
-  }, [symbols, ticker]);
+    return symbols.slice(0, 10);
+  }, [symbols]);
+
+  async function searchSymbols(query) {
+    const q = query.trim().toUpperCase();
+    if (!q) {
+      // Load all active symbols when query is empty
+      const data = await apiFetch("/symbols?active_only=true&bist100_only=false&limit=500", token);
+      setSymbols(data);
+      return;
+    }
+    const data = await apiFetch(`/symbols/search?q=${encodeURIComponent(q)}&active_only=true&limit=25`, token);
+    setSymbols(data);
+  }
 
   async function load(event, nextTicker = ticker) {
     event?.preventDefault();
@@ -441,9 +448,7 @@ function SymbolInsightPage({ token }) {
   }
 
   useEffect(() => {
-    apiFetch("/symbols?active_only=true&bist100_only=false&limit=500", token)
-      .then(setSymbols)
-      .catch(() => setSymbols([]));
+    searchSymbols("");
     loadWatchlist().catch(() => setWatchlist([]));
     load();
   }, []);
@@ -457,7 +462,7 @@ function SymbolInsightPage({ token }) {
           <p>Teknik gorunum, son sinyal ve karar loglari ayni yerde.</p>
         </div>
         <form className="symbol-search" onSubmit={load}>
-          <input value={ticker} onChange={(event) => setTicker(event.target.value)} placeholder="THYAO" />
+          <input value={ticker} onChange={(event) => { setTicker(event.target.value); searchSymbols(event.target.value); }} placeholder="THYAO" />
           <button className="primary-action" type="submit">Incele</button>
         </form>
       </section>

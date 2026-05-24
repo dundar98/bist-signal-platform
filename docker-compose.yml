@@ -54,6 +54,11 @@ services:
       BIST_SECRET_KEY: ${BIST_SECRET_KEY:-change-me-before-production}
       BIST_CORS_ORIGINS: ${BIST_CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000,http://localhost}
       BIST_ALERT_WEBHOOK_URL: ${BIST_ALERT_WEBHOOK_URL:-}
+      BIST_SMTP_SERVER: ${BIST_SMTP_SERVER:-smtp.gmail.com}
+      BIST_SMTP_PORT: ${BIST_SMTP_PORT:-587}
+      BIST_EMAIL_SENDER: ${BIST_EMAIL_SENDER:-}
+      BIST_EMAIL_PASSWORD: ${BIST_EMAIL_PASSWORD:-}
+      BIST_EMAIL_RECIPIENTS: ${BIST_EMAIL_RECIPIENTS:-}
     depends_on:
       postgres:
         condition: service_healthy
