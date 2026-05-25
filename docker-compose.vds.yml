@@ -1,0 +1,90 @@
+# =============================================================
+# BIST Signal Platform - VDS (Domain Yok) Docker Compose
+# 
+# Bu dosya domain olmadan, sadece IP üzerinden çalışır.
+# Caddy yerine nginx kullanır (SSL yok, düz HTTP).
+# 
+# KULLANIM:
+#   docker compose -f docker-compose.vds.yml up -d
+# =============================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-bist}
+      POSTGRES_USER: ${POSTGRES_USER:-bist}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bist}
+    # PostgreSQL portunu DIŞA AÇMA! Sadece Docker iç ağında kalsın.
+    # ports:
+    #   - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bist} -d ${POSTGRES_DB:-bist}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    environment:
+      BIST_APP_NAME: "BIST Signal Platform"
+      BIST_ENVIRONMENT: production
+      BIST_DATABASE_URL: ${BIST_CONTAINER_DATABASE_URL:-postgresql+psycopg://bist:bist@postgres:5432/bist}
+      BIST_SECRET_KEY: ${BIST_SECRET_KEY:-change-me-before-production}
+      BIST_ACCESS_TOKEN_EXPIRE_MINUTES: 60
+      BIST_CORS_ORIGINS: ${BIST_CORS_ORIGINS:-http://localhost,http://127.0.0.1,http://localhost:80}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: /api
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    command: ["python", "scripts/run_worker.py", "--interval-hours", "24"]
+    environment:
+      BIST_APP_NAME: "BIST Signal Platform"
+      BIST_ENVIRONMENT: production
+      BIST_DATABASE_URL: ${BIST_CONTAINER_DATABASE_URL:-postgresql+psycopg://bist:bist@postgres:5432/bist}
+      BIST_SECRET_KEY: ${BIST_SECRET_KEY:-change-me-before-production}
+      BIST_CORS_ORIGINS: ${BIST_CORS_ORIGINS:-http://localhost,http://127.0.0.1,http://localhost:80}
+      BIST_ALERT_WEBHOOK_URL: ${BIST_ALERT_WEBHOOK_URL:-}
+      BIST_SMTP_SERVER: ${BIST_SMTP_SERVER:-smtp.gmail.com}
+      BIST_SMTP_PORT: ${BIST_SMTP_PORT:-587}
+      BIST_EMAIL_SENDER: ${BIST_EMAIL_SENDER:-}
+      BIST_EMAIL_PASSWORD: ${BIST_EMAIL_PASSWORD:-}
+      BIST_EMAIL_RECIPIENTS: ${BIST_EMAIL_RECIPIENTS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Nginx reverse proxy (domain yok, SSL yok, düz HTTP)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
