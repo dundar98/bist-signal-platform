@@ -10,6 +10,8 @@ import logging
 from typing import List, Set
 from datetime import date
 
+from utils import normalize_ticker
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,28 +191,8 @@ class BIST100Validator:
     
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:
-        """
-        Normalize a symbol to standard format.
-        
-        Removes common suffixes like .IS, .E, etc.
-        Converts to uppercase.
-        
-        Args:
-            symbol: Raw symbol string
-            
-        Returns:
-            Normalized symbol
-        """
-        symbol = symbol.upper().strip()
-        
-        # Remove common exchange suffixes
-        suffixes = [".IS", ".E", ".TI"]
-        for suffix in suffixes:
-            if symbol.endswith(suffix):
-                symbol = symbol[:-len(suffix)]
-                break
-        
-        return symbol
+        """Normalize a symbol to standard format using the project-wide normalizer."""
+        return normalize_ticker(symbol)
     
     def add_symbol(self, symbol: str) -> None:
         """

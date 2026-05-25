@@ -23,6 +23,7 @@ from database.repositories.prices import (
     upsert_price_bars,
 )
 from database.session import get_db
+from utils import normalize_ticker
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ def search_symbols(
         stmt = stmt.where(Symbol.is_active.is_(True))
 
     if q.strip():
-        query = q.strip().upper()
+        query = normalize_ticker(q)
         stmt = stmt.where(
             Symbol.ticker.contains(query) | Symbol.name.ilike(f"%{q.strip()}%")
         )
@@ -158,6 +159,7 @@ def get_symbol_features(
 def get_symbol_analysis(
     ticker: str,
     timeframe: str = Query(default="1d"),
+    force: bool = Query(default=False, description="Force re-fetch even if data exists"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> SymbolAnalysisRead:
@@ -172,11 +174,25 @@ def get_symbol_analysis(
     except PriceDataError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Check if the symbol has any price data; if not, trigger pipeline
+    # Check if the symbol has enough price data and features; if not, trigger pipeline
     existing_prices = list_price_bars(db, symbol.id, tf, limit=1)
-    if not existing_prices:
-        logger.info("No price data for %s — triggering auto-pipeline", symbol.ticker)
-        _run_symbol_pipeline(db, symbol, tf)
+    existing_features = list_feature_values(db, symbol.id, tf, limit=1)
+
+    needs_pipeline = force or not existing_prices or not existing_features
+    if needs_pipeline:
+        reason = (
+            "force flag set"
+            if force
+            else "no price data" if not existing_prices
+            else "no feature data"
+        )
+        logger.info("Triggering auto-pipeline for %s (reason: %s)", symbol.ticker, reason)
+        try:
+            _run_symbol_pipeline(db, symbol, tf)
+        except Exception as exc:
+            logger.error("Auto-pipeline failed for %s: %s", symbol.ticker, exc)
+        else:
+            logger.info("Auto-pipeline completed for %s", symbol.ticker)
 
     return build_symbol_analysis(db, symbol, tf)
 

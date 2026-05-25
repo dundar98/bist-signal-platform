@@ -331,15 +331,18 @@ def generate_signal_report(result: DailyScanResult) -> str:
 def generate_dashboard_json(result: DailyScanResult, output_path: str = "docs/dashboard_data.json"):
     """
     Generate JSON data for the web dashboard.
+
+    Saves a mode-specific file (e.g. dashboard_data_KISA.json) and merges it
+    into a combined dashboard_data.json that contains all available modes.
     """
     import json
-    
+
     avg_vol = np.mean([s.volatility for s in (result.buy_signals + result.sell_signals + result.hold_signals)]) if (result.buy_signals + result.sell_signals + result.hold_signals) else 0
     vol_status = "Yüksek ⚠️" if avg_vol > 0.03 else ("Düşük 💤" if avg_vol < 0.01 else "Normal")
-    
+
     from config import get_config
     conf = get_config()
-    
+
     data = {
         "scan_date": str(result.scan_date),
         "mode": result.mode,
@@ -363,8 +366,33 @@ def generate_dashboard_json(result: DailyScanResult, output_path: str = "docs/da
             "stop_loss": conf.backtest.stop_loss_pct
         }
     }
-    
-    Path(output_path).parent.mkdir(exist_ok=True, parents=True)
-    with open(output_path, 'w', encoding='utf-8') as f:
+
+    out_dir = Path(output_path).parent
+    out_dir.mkdir(exist_ok=True, parents=True)
+
+    # Save mode-specific file
+    mode_file = out_dir / f"dashboard_data_{result.mode}.json"
+    with open(mode_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    logger.info(f"Dashboard data saved to {output_path}")
+    logger.info(f"Dashboard data saved to {mode_file}")
+
+    # Merge into combined dashboard_data.json
+    combined_path = Path(output_path)
+    combined: dict = {}
+    if combined_path.exists():
+        try:
+            with open(combined_path, 'r', encoding='utf-8') as f:
+                combined = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            combined = {}
+
+    # combined structure: { "modes": { "KISA": {...}, ... }, "active_mode": "KISA" }
+    if "modes" not in combined:
+        combined = {"modes": {}, "active_mode": result.mode}
+    combined["modes"][result.mode] = data
+    combined["active_mode"] = result.mode
+    combined["scan_date"] = str(result.scan_date)
+
+    with open(combined_path, 'w', encoding='utf-8') as f:
+        json.dump(combined, f, indent=2, ensure_ascii=False)
+    logger.info(f"Combined dashboard data updated at {combined_path}")

@@ -1,8 +1,9 @@
-"""Portfolio construction and signal persistence."""
+"""Portfolio construction and signal persistence with ML prediction integration."""
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -11,8 +12,10 @@ from database.models import (
     FeatureValue,
     Horizon,
     DecisionLog,
+    ModelRun,
     PortfolioItem,
     PortfolioSnapshot,
+    Prediction,
     PriceBar,
     Signal,
     SignalDirection,
@@ -23,6 +26,8 @@ from database.models import (
 from database.repositories.prices import list_active_symbols
 from signals.scoring import ScoreResult, score_feature
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -30,6 +35,8 @@ class Candidate:
     feature: FeatureValue
     latest_price: float
     score: ScoreResult
+    prediction_id: int | None = None
+    ml_probability: float | None = None
 
 
 def _latest_feature(
@@ -59,6 +66,38 @@ def _latest_price(db: Session, symbol_id: int, timeframe: Timeframe) -> PriceBar
     )
 
 
+def _latest_prediction(
+    db: Session, symbol_id: int, timeframe: Timeframe
+) -> tuple[int | None, float | None]:
+    """Return (prediction_id, probability) of the latest ML prediction for a symbol.
+
+    Looks up the most recent model_run that matches the timeframe and returns
+    its prediction for the given symbol. Returns (None, None) if no prediction found.
+    """
+    latest_run = db.scalar(
+        select(ModelRun)
+        .where(ModelRun.timeframe == timeframe, ModelRun.model_type != "skipped")
+        .order_by(ModelRun.created_at.desc())
+        .limit(1)
+    )
+    if latest_run is None:
+        return None, None
+
+    prediction = db.scalar(
+        select(Prediction)
+        .where(
+            Prediction.model_run_id == latest_run.id,
+            Prediction.symbol_id == symbol_id,
+        )
+        .order_by(Prediction.prediction_time.desc())
+        .limit(1)
+    )
+    if prediction is None:
+        return None, None
+
+    return prediction.id, prediction.probability
+
+
 def build_candidates(
     db: Session,
     *,
@@ -68,7 +107,11 @@ def build_candidates(
     symbol_limit: int | None = None,
     min_score: float = 55.0,
 ) -> list[Candidate]:
-    """Score active symbols and return candidates above the watch threshold."""
+    """Score active symbols and return candidates above the watch threshold.
+
+    Fetches the latest ML prediction for each symbol and blends it into
+    the scoring process via score_feature().
+    """
 
     symbols = list_active_symbols(db, limit=symbol_limit)
     candidates: list[Candidate] = []
@@ -79,7 +122,9 @@ def build_candidates(
         if feature is None or price is None:
             continue
 
-        score = score_feature(feature, horizon=horizon)
+        pred_id, ml_prob = _latest_prediction(db, symbol.id, timeframe)
+
+        score = score_feature(feature, horizon=horizon, ml_probability=ml_prob)
         if score.final_score < min_score:
             continue
 
@@ -89,6 +134,8 @@ def build_candidates(
                 feature=feature,
                 latest_price=price.close,
                 score=score,
+                prediction_id=pred_id,
+                ml_probability=ml_prob,
             )
         )
 
@@ -136,8 +183,15 @@ def create_portfolio_snapshot(
     max_positions: int = 10,
     min_score: float = 55.0,
     market_risk_mode: str | None = None,
+    outcome_meta_scorer=None,
 ) -> PortfolioSnapshot:
-    """Create a portfolio snapshot from the highest scoring candidates."""
+    """Create a portfolio snapshot from the highest scoring candidates.
+
+    Args:
+        outcome_meta_scorer: Optional OutcomeMetaScorer instance. When provided,
+            applies a success-probability boost/penalty to each candidate's
+            final_score based on historical outcome patterns.
+    """
 
     target_multiplier = 1.10
     stop_multiplier = 0.95
@@ -176,15 +230,50 @@ def create_portfolio_snapshot(
     for rank, candidate in enumerate(selected, start=1):
         score = candidate.score
         direction = SignalDirection(score.direction)
+
+        # Apply outcome meta-learning boost if available
+        outcome_boost = 0.0
+        outcome_meta_prob: float | None = None
+        if outcome_meta_scorer is not None:
+            try:
+                from ml.outcome_learning import compute_outcome_boost
+
+                outcome_meta_prob = outcome_meta_scorer.score_signal_candidate(
+                    final_score=score.final_score,
+                    model_score=score.model_score,
+                    trend_score=score.trend_score,
+                    volume_score=score.volume_score,
+                    momentum_score=score.momentum_score,
+                    risk_score=score.risk_score,
+                    horizon=horizon,
+                    signal_time=candidate.feature.timestamp,
+                )
+                outcome_boost = compute_outcome_boost(
+                    outcome_meta_scorer,
+                    final_score=score.final_score,
+                    model_score=score.model_score,
+                    trend_score=score.trend_score,
+                    volume_score=score.volume_score,
+                    momentum_score=score.momentum_score,
+                    risk_score=score.risk_score,
+                    horizon=horizon,
+                    signal_time=candidate.feature.timestamp,
+                )
+            except Exception as exc:
+                logger.warning("Outcome meta-scoring failed: %s", exc)
+
+        adjusted_final_score = max(0.0, min(100.0, score.final_score + outcome_boost))
+
         signal = Signal(
             symbol_id=candidate.symbol.id,
+            prediction_id=candidate.prediction_id,
             signal_time=candidate.feature.timestamp,
             timeframe=timeframe,
             horizon=horizon,
             strategy=strategy,
             direction=direction,
             status=SignalStatus.OPEN,
-            final_score=score.final_score,
+            final_score=adjusted_final_score,
             model_score=score.model_score,
             trend_score=score.trend_score,
             volume_score=score.volume_score,
@@ -193,7 +282,7 @@ def create_portfolio_snapshot(
             entry_price=candidate.latest_price,
             stop_price=candidate.latest_price * stop_multiplier if direction == SignalDirection.BUY else None,
             target_price=candidate.latest_price * target_multiplier if direction == SignalDirection.BUY else None,
-            reason=f"{score.reason}; market_risk={market_risk_mode or 'not_used'}",
+            reason=f"{score.reason}; market_risk={market_risk_mode or 'not_used'}; outcome_boost={outcome_boost:+.1f}",
         )
         db.add(signal)
         db.flush()
@@ -226,6 +315,11 @@ def create_portfolio_snapshot(
                         "atr_pct": candidate.feature.atr_pct,
                         "volatility": candidate.feature.volatility,
                         "volume_ratio": candidate.feature.volume_ratio,
+                        "ml_probability": candidate.ml_probability,
+                        "ml_blend_weight": score.ml_blend_weight,
+                        "prediction_id": candidate.prediction_id,
+                        "outcome_boost": outcome_boost,
+                        "outcome_meta_probability": outcome_meta_prob,
                     },
                     ensure_ascii=False,
                     sort_keys=True,

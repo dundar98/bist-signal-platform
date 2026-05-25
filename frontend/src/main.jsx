@@ -45,6 +45,39 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
+/**
+ * Convert a string to plain ASCII uppercase, safe for Turkish-locale browsers.
+ *
+ * On Turkish-locale systems JavaScript maps 'i' → 'İ' (U+0130, dotted capital I)
+ * which breaks ticker lookups stored as plain ASCII.  This helper first strips
+ * Turkish-specific characters to their ASCII base, then calls .toUpperCase().
+ */
+function asciiUpper(text) {
+  const turkishMap = {
+    "\u0130": "I",  // İ (dotted capital I)
+    "\u0131": "I",  // ı (dotless lowercase i)
+    "\u015e": "S",  // Ş
+    "\u015f": "S",  // ş
+    "\u011e": "G",  // Ğ
+    "\u011f": "G",  // ğ
+    "\u00dc": "U",  // Ü
+    "\u00fc": "U",  // ü
+    "\u00d6": "O",  // Ö
+    "\u00f6": "O",  // ö
+    "\u00c7": "C",  // Ç
+    "\u00e7": "C",  // ç
+  };
+  let result = "";
+  for (const ch of text.trim()) {
+    if (turkishMap[ch] !== undefined) {
+      result += turkishMap[ch];
+    } else {
+      result += ch;
+    }
+  }
+  return result.toUpperCase();
+}
+
 function formatNumber(value, digits = 1) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
   return Number(value).toLocaleString("tr-TR", { maximumFractionDigits: digits });
@@ -264,9 +297,12 @@ function EmptyState({ horizon }) {
       <Target size={32} />
       <h3>{active.label} vade icin sinyal yok</h3>
       <p>
-        Bu vade su an secici filtreleri gecen hisse uretmedi. Kisa vade icin intraday veri, uzun vade icin daha uzun
-        gecmis ve haftalik trend filtresi daha iyi sonuc verir.
+        {active.label} vade secici skor filtrelerini gecen hisse bulunamadi.
+        Sinyal uretmek icin pipeline calistirilmalidir:
       </p>
+      <code style={{ display: "block", marginTop: "0.5rem", fontSize: "0.75rem", opacity: 0.7 }}>
+        python scripts/run_pipeline.py --horizons short,medium,long
+      </code>
     </div>
   );
 }
@@ -405,7 +441,7 @@ function SymbolInsightPage({ token }) {
   }, [symbols]);
 
   async function searchSymbols(query) {
-    const q = query.trim().toUpperCase();
+    const q = asciiUpper(query);
     if (!q) {
       // Load all active symbols when query is empty
       const data = await apiFetch("/symbols?active_only=true&bist100_only=false&limit=500", token);
@@ -419,7 +455,7 @@ function SymbolInsightPage({ token }) {
   async function load(event, nextTicker = ticker) {
     event?.preventDefault();
     if (!nextTicker.trim()) return;
-    const cleanTicker = nextTicker.trim().toUpperCase();
+    const cleanTicker = asciiUpper(nextTicker);
     setTicker(cleanTicker);
     setLoading(true);
     setError("");
@@ -447,6 +483,23 @@ function SymbolInsightPage({ token }) {
     await loadWatchlist();
   }
 
+  async function forceAnalyze(event) {
+    event?.preventDefault();
+    const cleanTicker = asciiUpper(ticker);
+    if (!cleanTicker) return;
+    setTicker(cleanTicker);
+    setLoading(true);
+    setError("");
+    try {
+      const data = await apiFetch(`/symbols/${cleanTicker}/analyze?timeframe=1d`, token, { method: "POST" });
+      setAnalysis(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     searchSymbols("");
     loadWatchlist().catch(() => setWatchlist([]));
@@ -464,6 +517,9 @@ function SymbolInsightPage({ token }) {
         <form className="symbol-search" onSubmit={load}>
           <input value={ticker} onChange={(event) => { setTicker(event.target.value); searchSymbols(event.target.value); }} placeholder="THYAO" />
           <button className="primary-action" type="submit">Incele</button>
+          <button className="primary-action" type="button" onClick={forceAnalyze} title="Veri yoksa fiyat çekip teknik göstergeleri hesaplar">
+            <RefreshCcw size={16} /> Analiz Et
+          </button>
         </form>
       </section>
       <section className="symbol-suggestions">

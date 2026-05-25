@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from database.models import PriceBar, Symbol, Timeframe
+from utils import normalize_ticker
 
 
 REQUIRED_PRICE_COLUMNS = {"timestamp", "open", "high", "low", "close", "volume"}
@@ -16,9 +17,9 @@ class PriceDataError(ValueError):
 
 
 def get_symbol_by_ticker(db: Session, ticker: str) -> Symbol | None:
-    """Return a symbol by ticker."""
+    """Return a symbol by ticker, handling Turkish characters safely."""
 
-    return db.scalar(select(Symbol).where(Symbol.ticker == ticker.upper()))
+    return db.scalar(select(Symbol).where(Symbol.ticker == normalize_ticker(ticker)))
 
 
 def list_active_symbols(

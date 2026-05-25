@@ -1,6 +1,10 @@
 
 // BIST100 AI Dashboard Logic
 
+// Store the full loaded data so vade switches don't need re-fetch
+let _dashboardData = null;
+let _currentMode = 'KISA';
+
 document.addEventListener('DOMContentLoaded', () => {
     // Navigation
     setupNavigation();
@@ -16,7 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', () => {
             document.querySelectorAll('.vade-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            fetchData(); // In real app, we might pass vade param, but for now we refresh state
+            _currentMode = btn.getAttribute('data-vade') || 'KISA';
+            applyMode();
         });
     });
 
@@ -90,11 +95,62 @@ async function fetchData() {
         const response = await fetch('dashboard_data.json');
         if (!response.ok) throw new Error('Veri yüklenemedi');
 
-        const data = await response.json();
-        updateDashboard(data);
+        const raw = await response.json();
+        _dashboardData = raw;
+        applyMode();
     } catch (error) {
         console.error('Error:', error);
         // On local, fallback to dummy data if json missing
+        _dashboardData = null;
+        updateDashboard(getDummyData());
+    }
+}
+
+/**
+ * Extract mode-specific data from the loaded JSON.
+ * Supports two formats:
+ *   - New (combined): { modes: { KISA: {...}, ORTA: {...}, UZUN: {...} }, active_mode: "..." }
+ *   - Old (flat):     { scan_date: "...", buy_signals: [...], ... }
+ */
+function getModeData(mode) {
+    if (!_dashboardData) return null;
+    // New combined format
+    if (_dashboardData.modes && _dashboardData.modes[mode]) {
+        return _dashboardData.modes[mode];
+    }
+    // Old flat format – if the stored mode matches, return as-is; otherwise null
+    if (_dashboardData.mode === mode) {
+        return _dashboardData;
+    }
+    // Flat format with different mode – no data for this vade
+    return null;
+}
+
+/**
+ * Apply the currently active mode's data to the dashboard.
+ */
+function applyMode() {
+    const modeData = getModeData(_currentMode);
+
+    if (modeData) {
+        updateDashboard(modeData);
+    } else if (_dashboardData) {
+        // We have data but not for this mode – show a helpful message
+        document.getElementById('last-update').textContent =
+            `Son Güncelleme: ${_dashboardData.scan_date || 'bilinmiyor'} — ${_currentMode} verisi henüz taranmadı`;
+        document.getElementById('total-scanned').textContent = '-';
+        document.getElementById('buy-count').textContent = '-';
+        document.getElementById('sell-count').textContent = '-';
+        document.getElementById('market-volatility').textContent = 'Veri yok';
+
+        const tbody = document.querySelector('#signals-table tbody');
+        tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; padding:2rem; color:var(--text-secondary);">
+            <i class="fa-solid fa-circle-exclamation"></i> ${_currentMode} vade için henüz tarama yapılmadı.<br>
+            <small>python scripts/run_daily_scan.py --mode ${_currentMode} --lookback 200</small>
+        </td></tr>`;
+
+        document.getElementById('signal-details').innerHTML = '';
+    } else {
         updateDashboard(getDummyData());
     }
 }

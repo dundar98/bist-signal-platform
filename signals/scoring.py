@@ -1,6 +1,7 @@
-"""Rule-based scoring for explainable first-pass signal selection."""
+"""Rule-based scoring with ML probability integration for explainable signal selection."""
 
 from dataclasses import dataclass
+from typing import Optional
 
 from database.models import FeatureValue, Horizon
 
@@ -15,6 +16,8 @@ class ScoreResult:
     risk_score: float
     direction: str
     reason: str
+    ml_probability: Optional[float] = None
+    ml_blend_weight: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -23,50 +26,58 @@ class ScoringProfile:
     momentum_weight: float
     volume_weight: float
     risk_weight: float
+    ml_weight: float
     min_buy_score: float
     min_risk_score: float
     min_volume_score: float
     max_buy_rsi: float
     min_trend_score: float
     min_momentum_score: float
+    min_ml_probability: float
 
 
 SCORING_PROFILES = {
     Horizon.SHORT: ScoringProfile(
-        trend_weight=0.15,
-        momentum_weight=0.40,
-        volume_weight=0.30,
-        risk_weight=0.15,
+        trend_weight=0.12,
+        momentum_weight=0.33,
+        volume_weight=0.25,
+        risk_weight=0.12,
+        ml_weight=0.18,
         min_buy_score=56,
         min_risk_score=30,
         min_volume_score=35,
         max_buy_rsi=78,
         min_trend_score=38,
         min_momentum_score=48,
+        min_ml_probability=0.45,
     ),
     Horizon.MEDIUM: ScoringProfile(
-        trend_weight=0.35,
-        momentum_weight=0.30,
-        volume_weight=0.20,
-        risk_weight=0.15,
+        trend_weight=0.28,
+        momentum_weight=0.24,
+        volume_weight=0.16,
+        risk_weight=0.12,
+        ml_weight=0.20,
         min_buy_score=60,
         min_risk_score=25,
         min_volume_score=35,
         max_buy_rsi=78,
         min_trend_score=48,
         min_momentum_score=42,
+        min_ml_probability=0.50,
     ),
     Horizon.LONG: ScoringProfile(
-        trend_weight=0.50,
-        momentum_weight=0.15,
-        volume_weight=0.10,
-        risk_weight=0.25,
+        trend_weight=0.40,
+        momentum_weight=0.12,
+        volume_weight=0.08,
+        risk_weight=0.20,
+        ml_weight=0.20,
         min_buy_score=56,
         min_risk_score=35,
         min_volume_score=20,
         max_buy_rsi=75,
         min_trend_score=52,
         min_momentum_score=35,
+        min_ml_probability=0.50,
     ),
 }
 
@@ -113,8 +124,16 @@ def score_feature(
     feature: FeatureValue,
     *,
     horizon: Horizon = Horizon.MEDIUM,
+    ml_probability: Optional[float] = None,
 ) -> ScoreResult:
-    """Score one feature row and produce an explainable direction."""
+    """Score one feature row and produce an explainable direction.
+
+    Args:
+        feature: FeatureValue row with technical indicators.
+        horizon: Investment horizon (SHORT/MEDIUM/LONG).
+        ml_probability: Optional ML model probability [0, 1]. When provided,
+            it is blended into the final_score using the profile's ml_weight.
+    """
 
     profile = SCORING_PROFILES[horizon]
     trend = _value(feature.trend_score)
@@ -124,14 +143,33 @@ def score_feature(
     rsi = _value(feature.rsi, 50.0)
     rsi_penalty = _rsi_penalty(feature)
 
-    final_score = (
+    # Base rule-based score (0-100 scale)
+    rule_score = (
         trend * profile.trend_weight
         + momentum * profile.momentum_weight
         + volume * profile.volume_weight
         + risk * profile.risk_weight
-        - rsi_penalty
     )
-    final_score = _bounded(final_score)
+
+    # Blend ML probability into the score if available
+    ml_blend_weight = 0.0
+    model_score = rule_score  # default: fallback to rule score
+
+    if ml_probability is not None and 0.0 <= ml_probability <= 1.0:
+        ml_blend_weight = profile.ml_weight
+        # Convert ML probability [0, 1] to 0-100 scale
+        ml_score = ml_probability * 100.0
+        model_score = ml_score
+        # Blend: rule_score gets (1 - ml_weight), ML gets ml_weight
+        # Then subtract RSI penalty
+        final_score = (
+            rule_score * (1.0 - ml_blend_weight)
+            + ml_score * ml_blend_weight
+            - rsi_penalty
+        )
+        final_score = _bounded(final_score)
+    else:
+        final_score = _bounded(rule_score - rsi_penalty)
 
     blocks = []
     if risk < profile.min_risk_score:
@@ -140,6 +178,13 @@ def score_feature(
         blocks.append(f"volume below {profile.min_volume_score:.0f}")
     if rsi > profile.max_buy_rsi:
         blocks.append(f"RSI above {profile.max_buy_rsi:.0f}")
+    if (
+        ml_probability is not None
+        and ml_probability < profile.min_ml_probability
+    ):
+        blocks.append(
+            f"ML prob {ml_probability:.2f} below {profile.min_ml_probability:.2f}"
+        )
 
     if (
         final_score >= profile.min_buy_score
@@ -160,6 +205,8 @@ def score_feature(
     reasons.append(f"volume {volume:.0f}")
     reasons.append(f"risk {risk:.0f}")
     reasons.append(f"rsi {rsi:.0f}")
+    if ml_probability is not None:
+        reasons.append(f"ML prob {ml_probability:.2f} (blend {ml_blend_weight:.0%})")
     if rsi_penalty:
         reasons.append(f"RSI penalty {rsi_penalty:.0f}")
     if blocks:
@@ -173,11 +220,13 @@ def score_feature(
 
     return ScoreResult(
         final_score=final_score,
-        model_score=final_score,
+        model_score=_bounded(model_score),
         trend_score=trend,
         volume_score=volume,
         momentum_score=momentum,
         risk_score=risk,
         direction=direction,
         reason=", ".join(reasons),
+        ml_probability=ml_probability,
+        ml_blend_weight=ml_blend_weight,
     )

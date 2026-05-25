@@ -62,9 +62,17 @@ def _latest_decision_logs(db: Session, symbol_id: int, timeframe: Timeframe, lim
     )
 
 
-def _summary(symbol: Symbol, feature: FeatureValue | None, signals: list[Signal]) -> str:
+def _summary(symbol: Symbol, feature: FeatureValue | None, signals: list[Signal], prices: list[PriceBar]) -> str:
     if feature is None:
-        return f"{symbol.ticker} için yeterli teknik veri oluşmamış."
+        if not prices:
+            return (
+                f"{symbol.ticker} için henüz fiyat verisi çekilemedi. "
+                f"Analizi başlatmak için 'Analiz Et' butonuna tıklayın veya /symbols/{symbol.ticker}/analyze endpoint'ini kullanın."
+            )
+        return (
+            f"{symbol.ticker} için {len(prices)} fiyat barı mevcut ancak teknik göstergeler henüz hesaplanmadı. "
+            "Analizi başlatmak için 'Analiz Et' butonuna tıklayın."
+        )
 
     parts = []
     if feature.trend_score is not None:
@@ -164,5 +172,5 @@ def build_symbol_analysis(db: Session, symbol: Symbol, timeframe: Timeframe) -> 
             )
             for log in logs
         ],
-        summary=_summary(symbol, feature, signals),
+        summary=_summary(symbol, feature, signals, prices),
     )

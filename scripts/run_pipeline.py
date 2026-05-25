@@ -64,6 +64,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-portfolios", action="store_true")
     parser.add_argument("--skip-outcomes", action="store_true")
     parser.add_argument("--train-ml", action="store_true", help="Train cheap baseline ML model after feature updates.")
+    parser.add_argument("--train-outcome-meta", action="store_true", help="Train outcome meta-model after outcome updates.")
+    parser.add_argument("--train-deep", action="store_true", help="Train deep learning models (LSTM/GRU/Transformer) in addition to baseline ML.")
+    parser.add_argument("--deep-epochs", type=int, default=50, help="Max epochs for deep learning training.")
+    parser.add_argument("--deep-models", default="transformer", help="Comma-separated deep model types (lstm,gru,cnn_lstm,transformer).")
     parser.add_argument("--ml-horizon-bars", type=int, default=5)
     parser.add_argument("--ml-target-return", type=float, default=0.03)
     parser.add_argument("--use-market-regime", action="store_true")
@@ -184,6 +188,16 @@ def main() -> int:
                     _record_error(summary, f"{symbol.ticker}: feature update failed: {exc}", args.fail_fast)
 
         if not args.skip_portfolios:
+            # Try to load outcome meta-scorer for signal boosting
+            outcome_scorer = None
+            try:
+                from ml.outcome_learning import get_latest_meta_scorer
+                outcome_scorer = get_latest_meta_scorer()
+                if outcome_scorer is not None:
+                    logger.info("Outcome meta-scorer loaded for signal boosting")
+            except Exception:
+                pass
+
             for horizon in horizons:
                 try:
                     snapshot = create_portfolio_snapshot(
@@ -196,6 +210,7 @@ def main() -> int:
                         max_positions=args.max_positions,
                         min_score=args.min_score,
                         market_risk_mode=market_risk_mode,
+                        outcome_meta_scorer=outcome_scorer,
                     )
                     db.commit()
                     db.refresh(snapshot)
@@ -235,6 +250,46 @@ def main() -> int:
             except Exception as exc:
                 db.rollback()
                 _record_error(summary, f"ML training failed: {exc}", args.fail_fast)
+
+        if args.train_outcome_meta:
+            try:
+                from ml.outcome_learning import train_outcome_meta_model
+                meta_result = train_outcome_meta_model(db)
+                if meta_result is not None:
+                    logger.info(
+                        "Outcome meta-model trained. type=%s AUC=%.4f precision=%.4f",
+                        meta_result.model_type,
+                        meta_result.auc,
+                        meta_result.precision,
+                    )
+                else:
+                    logger.info("Outcome meta-model skipped (insufficient data)")
+            except Exception as exc:
+                _record_error(summary, f"Outcome meta-training failed: {exc}", args.fail_fast)
+
+        if args.train_deep:
+            try:
+                from ml.deep_training import train_deep_models
+                deep_model_types = [m.strip() for m in args.deep_models.split(",") if m.strip()]
+                deep_results = train_deep_models(
+                    db,
+                    timeframe=timeframe,
+                    horizon_bars=args.ml_horizon_bars,
+                    target_return=args.ml_target_return,
+                    model_types=deep_model_types,
+                    epochs=args.deep_epochs,
+                )
+                db.commit()
+                for dr in deep_results:
+                    logger.info(
+                        "Deep model trained: %s AUC=%.4f run_id=%s",
+                        dr["model_type"],
+                        dr["metrics"].get("auc", 0),
+                        dr["model_run_id"],
+                    )
+            except Exception as exc:
+                db.rollback()
+                _record_error(summary, f"Deep learning training failed: {exc}", args.fail_fast)
 
         finish_job(
             db,

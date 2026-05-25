@@ -38,6 +38,7 @@ def run_cycle() -> None:
             "short,medium,long",
             "--use-market-regime",
             "--train-ml",
+            "--train-outcome-meta",
         ]
     )
     # Send daily email report to all registered users
