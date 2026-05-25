@@ -46,14 +46,21 @@ def _download(ticker: str, start: date, end: date) -> pd.DataFrame:
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = [column[0] for column in raw.columns]
     raw = raw.reset_index()
+    # yfinance farkli surumlerde tarih sutununu 'Date', 'date' veya index adiyla donebilir
+    date_col = "Date" if "Date" in raw.columns else raw.columns[0]
+    close_col = "Close" if "Close" in raw.columns else "close"
+    open_col = "Open" if "Open" in raw.columns else "open"
+    high_col = "High" if "High" in raw.columns else "high"
+    low_col = "Low" if "Low" in raw.columns else "low"
+    vol_col = "Volume" if "Volume" in raw.columns else ("volume" if "volume" in raw.columns else None)
     return pd.DataFrame(
         {
-            "timestamp": raw["Date"],
-            "open": raw["Open"],
-            "high": raw["High"],
-            "low": raw["Low"],
-            "close": raw["Close"],
-            "volume": raw.get("Volume", 0),
+            "timestamp": raw[date_col],
+            "open": raw[open_col],
+            "high": raw[high_col],
+            "low": raw[low_col],
+            "close": raw[close_col],
+            "volume": raw[vol_col] if vol_col else 0,
         }
     )
 
